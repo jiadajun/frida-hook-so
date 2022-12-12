@@ -137,7 +137,7 @@ function hook08() {
         Java.perform(function () {
             Interceptor.attach(so_addr_2868, {
                 onEnter: function (args) {
-                    console.log("so_addr_2868 ", this.context.x1,this.context.x2, this.context.W3, this.context.W4)
+                    console.log("so_addr_2868 ", this.context.x1, this.context.x2, this.context.W3, this.context.W4)
                 },
                 onLeave: function (retval) {
                     console.log("retval is :", retval.toInt32())
@@ -149,99 +149,138 @@ function hook08() {
 }
 
 // so 层方法注册到 js  主动调用
-function hook09() {
+/*
+new NativeFunction(address, returnType, argTypes[, options])
+    address : 函数地址
+    returnType : 指定返回类型
+    argTypes : 数组指定参数类型
+    类型可选: void, pointer, int, uint, long, ulong, char, uchar, float, double, int8, uint8, int16, int32, uint32, int64, uint64; 参照函数所需的 type 来定义即可;
 
+*/
+function hook09() {
+    var baseAddress = Module.getBaseAddress("libnative-lib.so");
+    var addr_add = baseAddress.add(0x0000A28C);
+    var nativeFunction = new NativeFunction(addr_add, "int", ["int", "int"]);
+    var result = nativeFunction(1, 2);
+    console.log(result);
+}
+
+function hook099() {
+    Java.perform(function () {
+        // 获取 so 文件基地址
+        var baseAddress = Module.getBaseAddress("xxx.so");
+        // 获取目标函数偏移
+        sub_834_addr = baseAddress.add(0x835);
+        // 使用 new NativeFunction 将函数注册到 js
+        var sub_834 = new NativeFunction(sub_834_addr, 'pointer', ['pointer']);
+        // 开辟内存, 创建入参
+        var arg0 = Memory.alloc(10);
+        ptr(arg0).writeUtf8String("123");
+        var result = sub_834(arg0);
+        console.log("result is :", hexdump(result));
+
+
+    })
 }
 
 // hook libart 中的jni 方法
+//jni 全部定在在 /system/lib(64)/libart.so 文件中, 通过枚举 symbols 筛选出指定的方法
 function hook10() {
+    var GetStringUTFChars_addr = null;
+    //jni系统函数都在 libart.so 中
+    var module_libart = Process.getModuleByName("libart.so");
+    var symbols = module_libart.enumerateSymbols();
+    for (var i = 0; i < symbols.length; i++) {
+        var name = symbols[i].name;
+        //过滤我们想要的那个函数
+        if (name.indexOf("JNI") >= 0 && name.indexOf("art") >= 0 && name.indexOf("CheckJNI") >= -1) {
+            if (name.indexOf("GetStringUTFChars") >= 0) {
+                console.log(name);
+                //获取到指定 jni 方法地址
+                GetStringUTFChars_addr = symbols[i].address;
+            }
+        }
+    }
+
+    console.log("GetStringUTFChars :", GetStringUTFChars);
+    Java.perform(function () {
+
+        Interceptor.attach(GetStringUTFChars_addr, {
+            onEnter: function (args) {
+                // console.log("args[0] is : ", args[0]);
+                // console.log("args[1] is : ", args[1]);
+                console.log(" native args[1] is :", Java.vm.tryGetEnv().getStringUtfChars(args[1], null).readCString());
+                Thread.backtrace(this.context, Backtracer.FUZZY)
+                    .map(DebugSymbol.fromAddress).join('\n') + '\n';
+
+                // console.log("native args[1] is :", Java.cast(args[1], Java.use("java.lang.String")));
+                // console.log("native args[1] is :", Memory.readCString(Java.vm.getEnv().getStringUtfChars(args[1],null)));
+            }, onLeave: function (retval) {
+                // retval const char*
+                console.log("GetStringUTFChars onLeave : ", ptr(retval).readCString())
+            }
+        })
+    })
 
 }
 
-// hook libc 中的系统方法
-function hook11() {
-
-}
 
 // hook native 调用栈
 function hook12() {
-
+    Interceptor.attach(f, {
+        onEnter: function (args) {
+            console.log('RegisterNatives called from:\n' +
+                Thread.backtrace(this.context, Backtracer.ACCURATE)
+                    .map(DebugSymbol.fromAddress).join('\n') + '\n');
+        }
+    });
 }
 
 // frida 文件写入 frida hook libc
 function hook13() {
+    var addr_fopen = Module.getExportByName("libc.so", "fopen");
+    var addr_fputs = Module.getExportByName("libc.so", "fputs");
+    var addr_fclose = Module.getExportByName("libc.so", "fclose");
 
+    // 将 libc 的系统方法注册到 js 层
+    var fopen = new NativeFunction(addr_fopen, "pointer", ["pointer", "pointer"]);
+    var fputs = new NativeFunction(addr_fputs, "int", ["pointer", "pointer"]);
+    var fclose = new NativeFunction(addr_fclose, "int", ["pointer"]);
+
+    // 在 js 层主动调用 libc 的方法
+    // 不能直接将 js 的字符串传给 libc中的方法, 需要进行转换
+    var filename = Memory.allocUtf8String("/sdcard/reg.dat");
+    var open_mode = Memory.allocUtf8String("w");
+    var file = fopen(filename, open_mode);
+
+    var buffer = Memory.allocUtf8String("content from frida");
+    var result = fputs(buffer, file);
+    console.log("fputs ret: ", result);
+
+    // 关闭文件
+    fclose(file);
 }
 
 //hook 读写std_string
 function hook14() {
+    //readStdString
+    var str;
+    var isTiny = (str.readU8 & 1) === 0;
+    if (isTiny) {
+        return str.add(1).readUtf8String();
+    }
+    return str.add(2 * Process.pointerSize).readPointer().readUtf8String();
+
+    //writeStdString
+    var isTiny = (str.readU8() & 1) === 0;
+    if (isTiny) {
+        str.add(1).writeUtf8String(content);
+    } else {
+        str.add(2 * Process.pointerSize).readPointer().writeUtf8String(content);
+    }
 
 }
 
-// 针对 so 文件加载后马上 hook
-function hook15() {
-
-}
-
-// hook libc kill
-function hook16() {
-
-}
-
-// hook so readPointer
-function hook17() {
-
-}
-
-// hook so waiterPointer
-function hook18() {
-
-}
-
-// hook so readS32 readU32
-function hook19() {
-
-}
-
-// hook so readByteArray WriterByteArray
-function hook20() {
-
-}
-
-// hook so readCString  writerUTF8String
-function hook21() {
-
-}
-
-// hook 获取 jni array
-function hook22() {
-
-}
-
-// frida dump 内存中的so文件
-function hook23() {
-
-}
-
-// hook system properties get
-function hook24() {
-
-}
-
-// process 对象 API
-function hook25() {
-
-}
-
-// 39 hook fgets 让 TracerPid 为 0
-function hook26() {
-
-}
-
-// 40 frida 批量 trace
-function hook27() {
-
-}
 
 
 function main() {
